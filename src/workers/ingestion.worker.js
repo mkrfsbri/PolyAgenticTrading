@@ -186,6 +186,28 @@ function normalizeBinance(msg, arrivalTs) {
 // applied without a full snapshot on every tick.
 const orderBooks = new Map(); // tokenId → { bids: Map<priceStr, qty>, asks: Map<priceStr, qty> }
 
+// ─── Order book pruning ────────────────────────────────────────────────────
+//
+// Prediction market prices are bounded [0, 1]. In a volatile market a
+// continuous stream of price_change events can grow each Map to thousands of
+// entries that are economically irrelevant (far from the BBO). After every
+// BBO computation we delete any level outside this window.
+// 0.15 (15 cents) is wide enough to capture meaningful depth in a 15-minute
+// market while keeping each Map bounded to a few dozen entries in practice.
+const MAX_BOOK_SPREAD = 0.15;
+
+function pruneBook(book, bestBid, bestAsk) {
+  const bidFloor = bestBid - MAX_BOOK_SPREAD;
+  const askCeil  = bestAsk + MAX_BOOK_SPREAD;
+
+  for (const p of book.bids.keys()) {
+    if (parseFloat(p) < bidFloor) book.bids.delete(p);
+  }
+  for (const p of book.asks.keys()) {
+    if (parseFloat(p) > askCeil) book.asks.delete(p);
+  }
+}
+
 let polyWs = null;
 let polyPP = null;
 
@@ -311,6 +333,10 @@ function buildRecord(assetId, book, exchangeTsSecs, arrivalTs) {
   }
 
   if (!foundAsk) return null; // Empty ask side — unusable snapshot
+
+  // Evict stale levels now that we have a fresh BBO. This is the right place
+  // to prune because we've already finished iterating the Maps for this tick.
+  pruneBook(book, bestBid, bestAsk);
 
   // Polymarket timestamps are Unix seconds (string). Convert to nanoseconds
   // using BigInt to avoid float precision loss at this magnitude.

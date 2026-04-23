@@ -162,7 +162,37 @@ sudo sysctl --system
 
 ---
 
-## 9. Verify
+## 9. Clock Synchronisation — Chrony over ntpd
+
+The ingestion layer uses `process.hrtime.bigint()` anchored to `Date.now()` for
+microsecond-precision arrival timestamps. The anchor is only as accurate as the
+system clock. Standard `ntpd` drifts ±1–10 ms between sync intervals. For a
+15-minute market where every millisecond of latency advantage matters, use
+**Chrony**, which maintains sub-millisecond accuracy by continuously adjusting
+the clock frequency rather than stepping it.
+
+```bash
+# Install (Debian/Ubuntu)
+sudo apt install chrony
+
+# Enable hardware timestamping on the NIC for extra precision (if supported)
+sudo chronyc ntpdata         # check current sources
+sudo chronyc tracking        # verify System time offset < 0.5 ms
+
+# Recommended /etc/chrony/chrony.conf additions for a trading server:
+#   maxdistance 0.5          — reject sources with root distance > 500 ms
+#   makestep 0.1 3           — only step the clock if offset > 100 ms at boot
+#   rtcsync                  — keep the hardware clock in sync
+#   leapsecmode slew         — smear leap seconds (no sudden clock jump)
+```
+
+> On a co-located server near Binance/AWS endpoints, Chrony + a local GPS/PPS
+> source can achieve <100 µs accuracy. For a VPS, a nearby NTP pool server
+> paired with Chrony typically gives <1 ms — sufficient for this use case.
+
+---
+
+## 10. Verify
 
 ```bash
 # Confirm BBR is active on a socket

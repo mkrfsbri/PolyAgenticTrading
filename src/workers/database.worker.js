@@ -15,7 +15,9 @@
  * QuestDB schema (auto-created via ILP on first write):
  *
  *   CREATE TABLE market_data (
- *     symbol        SYMBOL,               -- indexed tag
+ *     symbol        SYMBOL,               -- ILP tag → auto-inferred as SYMBOL type
+ *                                        --   (integer-mapped internally; ~10× faster
+ *                                        --    for GROUP BY / WHERE than STRING)
  *     price         DOUBLE,
  *     best_bid      DOUBLE,
  *     best_ask      DOUBLE,
@@ -89,7 +91,8 @@ function connectQuestDB() {
 //   measurement,tag_key=tag_value field_key=value,... timestamp_ns\n
 //
 // Rules applied here:
-//   - SYMBOL column is mapped to an ILP tag (indexed, stored as enum-like).
+//   - ILP tags → QuestDB SYMBOL type (integer-mapped; far faster for filtering
+//     on symbol than STRING; auto-inferred, no DDL required).
 //   - Floating-point fields have no suffix (QuestDB infers DOUBLE).
 //   - Integer fields (ts_exchange) carry the "i" suffix.
 //   - The trailing timestamp is the epoch-nanosecond arrival time and becomes
