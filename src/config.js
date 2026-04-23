@@ -37,4 +37,17 @@ export const config = Object.freeze({
     // If the orchestrator sees no heartbeat within this window, restart all workers.
     timeoutMs: 15_000,
   },
+
+  discovery: {
+    // Set POLYMARKET_AUTO_DISCOVER=false to use only static POLYMARKET_TOKEN_IDS.
+    enabled: process.env.POLYMARKET_AUTO_DISCOVER !== 'false',
+    // AND-joined keywords — every keyword must appear in the market question.
+    // Default targets BTC 15-minute markets; adjust via POLYMARKET_KEYWORDS.
+    keywords: (process.env.POLYMARKET_KEYWORDS ?? 'BTC,15')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    // How often to poll the Gamma API for new / expired markets (ms).
+    intervalMs: Number(process.env.POLYMARKET_DISCOVER_INTERVAL_MS ?? 60_000),
+  },
 });
