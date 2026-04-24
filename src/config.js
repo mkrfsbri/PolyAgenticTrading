@@ -42,9 +42,9 @@ export const config = Object.freeze({
     // Set POLYMARKET_AUTO_DISCOVER=false to rely solely on POLYMARKET_TOKEN_IDS.
     enabled: process.env.POLYMARKET_AUTO_DISCOVER !== 'false',
     // Regex matched against each market's `slug` field (case-insensitive, no flags needed).
-    // Slugs are kebab-case: e.g. "btc-up-or-down-in-15-minutes-jan-15-12-00".
-    // Default targets BTC 15-minute markets; refine via POLYMARKET_SLUG_PATTERN.
-    slugPattern: process.env.POLYMARKET_SLUG_PATTERN ?? 'btc.*15',
+    // Real slug format: "btc-updown-15m-{unix_timestamp}" — e.g. btc-updown-15m-1777049100
+    // The timestamp suffix increments by 900 s per market; match the invariant prefix.
+    slugPattern: process.env.POLYMARKET_SLUG_PATTERN ?? 'btc-updown-15m',
     // How often to poll the Gamma API for new / expired markets (ms).
     intervalMs: Number(process.env.POLYMARKET_DISCOVER_INTERVAL_MS ?? 60_000),
   },

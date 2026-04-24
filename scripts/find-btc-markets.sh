@@ -17,7 +17,9 @@
 
 set -euo pipefail
 
-SLUG_PATTERN="${1:-btc.*15}"
+# Real BTC 15-min up/down slug format: btc-updown-15m-{unix_timestamp}
+# e.g. btc-updown-15m-1777049100 (timestamp increments by 900 s per market)
+SLUG_PATTERN="${1:-btc-updown-15m}"
 BASE="https://gamma-api.polymarket.com"
 LIMIT=100
 OFFSET=0
