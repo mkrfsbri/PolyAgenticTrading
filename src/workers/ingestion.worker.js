@@ -408,9 +408,9 @@ if (config.discovery.enabled) {
   connectPolymarket();
 
   const discovery = new MarketDiscovery({
-    keywords:   config.discovery.keywords,
-    intervalMs: config.discovery.intervalMs,
-    onUpdate:   onMarketsUpdated,
+    slugPattern: config.discovery.slugPattern,
+    intervalMs:  config.discovery.intervalMs,
+    onUpdate:    onMarketsUpdated,
   });
 
   // Await the first poll inline — if it succeeds we subscribe immediately on the

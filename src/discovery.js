@@ -1,11 +1,12 @@
 /**
  * discovery.js — Market Discovery
  *
- * Polls the Polymarket Gamma API to find active CLOB markets whose question
- * contains ALL configured keywords (AND logic, case-insensitive). Calls back
- * with the delta (added / removed) whenever the active token set changes.
+ * Polls the Polymarket Gamma API to find active CLOB markets whose `slug`
+ * matches a regex pattern. Slugs are machine-generated (kebab-case) and far
+ * more reliable for programmatic matching than free-text question strings.
  *
- * Uses the built-in `fetch` (Node.js 18+) — no extra dependencies.
+ * Calls back with the delta (added / removed) whenever the active token set
+ * changes. Uses the built-in `fetch` (Node.js 18+) — no extra dependencies.
  */
 
 import pino from 'pino';
@@ -53,35 +54,35 @@ function parseTokenIds(raw) {
 // ─── Public API ────────────────────────────────────────────────────────────
 
 /**
- * Returns a Set of token IDs for all active CLOB markets whose question
- * matches every keyword in `keywords` (AND-joined, case-insensitive).
+ * Returns a Set of token IDs for all active CLOB markets whose `slug` field
+ * matches `slugPattern` (compiled as a case-insensitive RegExp).
+ *
+ * Slugs are kebab-case, machine-generated identifiers — e.g.
+ * "btc-up-or-down-in-15-minutes-jan-15-12-00". Matching on slug is more
+ * precise than matching on the human-readable question text.
  *
  * Paginates the Gamma API automatically until the response is a partial page.
  *
- * @param {string[]} keywords
+ * @param {string} slugPattern  RegExp source string (flags: 'i' applied automatically)
  * @returns {Promise<Set<string>>}
  */
-export async function discoverTokenIds(keywords) {
-  const needles = keywords.map((k) => k.toLowerCase());
-  const found   = new Set();
-  let   offset  = 0;
+export async function discoverTokenIds(slugPattern) {
+  const re    = new RegExp(slugPattern, 'i');
+  const found = new Set();
+  let   offset = 0;
 
   while (true) {
     const page = await fetchPage(offset);
     if (!Array.isArray(page) || page.length === 0) break;
 
     for (const market of page) {
-      const q = (market.question ?? '').toLowerCase();
-      if (!needles.every((kw) => q.includes(kw))) continue;
+      const slug = market.slug ?? '';
+      if (!slug || !re.test(slug)) continue;
 
-      for (const id of parseTokenIds(market.clobTokenIds)) {
-        found.add(id);
-      }
+      const ids = parseTokenIds(market.clobTokenIds);
+      for (const id of ids) found.add(id);
 
-      log.debug(
-        { question: market.question, ids: parseTokenIds(market.clobTokenIds) },
-        'Matched market'
-      );
+      log.debug({ slug, question: market.question, ids }, 'Slug matched');
     }
 
     if (page.length < PAGE_SIZE) break;
@@ -101,12 +102,12 @@ export async function discoverTokenIds(keywords) {
  * caller gets a populated set before the ingestion WebSocket subscribes.
  */
 export class MarketDiscovery {
-  constructor({ keywords, intervalMs, onUpdate }) {
-    this._keywords   = keywords;
-    this._intervalMs = intervalMs;
-    this._onUpdate   = onUpdate;
-    this._current    = new Set();
-    this._timer      = null;
+  constructor({ slugPattern, intervalMs, onUpdate }) {
+    this._slugPattern = slugPattern;
+    this._intervalMs  = intervalMs;
+    this._onUpdate    = onUpdate;
+    this._current     = new Set();
+    this._timer       = null;
   }
 
   /** Runs the first poll inline, then starts the background interval. */
@@ -124,11 +125,11 @@ export class MarketDiscovery {
   }
 
   async _poll() {
-    log.debug({ keywords: this._keywords }, 'Polling Gamma API for active markets');
+    log.debug({ slugPattern: this._slugPattern }, 'Polling Gamma API for active markets');
 
     let discovered;
     try {
-      discovered = await discoverTokenIds(this._keywords);
+      discovered = await discoverTokenIds(this._slugPattern);
     } catch (err) {
       // Transient API failure — retain the last known set and retry next interval.
       log.warn({ err }, 'Gamma API fetch failed — retaining current market set');

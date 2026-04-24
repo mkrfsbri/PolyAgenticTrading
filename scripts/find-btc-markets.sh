@@ -1,25 +1,30 @@
 #!/usr/bin/env bash
-# Usage: ./scripts/find-btc-markets.sh [KEYWORD]
+# Usage: ./scripts/find-btc-markets.sh [SLUG_PATTERN]
 #
 # Paginates through all active Polymarket CLOB markets and prints every market
-# whose question contains KEYWORD (default: "BTC").
+# whose `slug` matches SLUG_PATTERN (a case-insensitive ERE regex).
+#
+# Slugs are machine-generated (kebab-case) and more reliable for programmatic
+# matching than free-text question strings. Examples:
+#   btc-up-or-down-in-15-minutes-jan-15-12-00
+#   bitcoin-15-minute-price-prediction-2025-01-15
 #
 # Output:
-#   - Human-readable market list with parsed token IDs
+#   - Human-readable market list (slug, question, condition ID, token IDs)
 #   - A ready-to-paste POLYMARKET_TOKEN_IDS= line for .env
 #
 # Requirements: curl, jq
 
 set -euo pipefail
 
-KEYWORD="${1:-BTC}"
+SLUG_PATTERN="${1:-btc.*15}"
 BASE="https://gamma-api.polymarket.com"
 LIMIT=100
 OFFSET=0
 FOUND=0
 
-echo "Scanning active CLOB markets for: \"$KEYWORD\"" >&2
-echo "────────────────────────────────────────────────" >&2
+echo "Scanning active CLOB markets — slug pattern: \"${SLUG_PATTERN}\"" >&2
+echo "────────────────────────────────────────────────────────────────" >&2
 
 ALL_TOKEN_IDS=()
 
@@ -33,14 +38,13 @@ while true; do
     break
   fi
 
-  # Parse each matching market.
-  # clobTokenIds arrives as a stringified JSON array ("[\"..\",\"..\"]") — use
-  # 'if type == "string" then fromjson else . end' to handle both old and new API
-  # responses gracefully.
-  MATCHES=$(echo "$PAGE" | jq -r --arg kw "$KEYWORD" '
+  # Filter by slug regex. clobTokenIds is a stringified JSON array —
+  # 'if type == "string" then fromjson else . end' handles both API formats.
+  MATCHES=$(echo "$PAGE" | jq -r --arg pat "$SLUG_PATTERN" '
     .[] |
-    select(.question | ascii_downcase | contains($kw | ascii_downcase)) |
+    select(.slug != null and (.slug | test($pat; "i"))) |
     [
+      "SLUG     : \(.slug)",
       "QUESTION : \(.question)",
       "CONDITION: \(.conditionId // "n/a")",
       "TOKENS   : \(.clobTokenIds | if type == "string" then fromjson else . end | join(","))",
@@ -50,14 +54,12 @@ while true; do
 
   if [[ -n "$MATCHES" ]]; then
     echo "$MATCHES"
-    # Accumulate token IDs for the .env line at the end
     while IFS= read -r line; do
       [[ "$line" == TOKENS* ]] && ALL_TOKEN_IDS+=("${line#TOKENS   : }")
     done <<< "$MATCHES"
     FOUND=$((FOUND + 1))
   fi
 
-  # If fewer results than limit, we've reached the last page
   if [[ "$COUNT" -lt "$LIMIT" ]]; then
     break
   fi
@@ -65,18 +67,22 @@ while true; do
   OFFSET=$((OFFSET + LIMIT))
 done
 
-echo "────────────────────────────────────────────────" >&2
-echo "Found $FOUND matching market(s)." >&2
+echo "────────────────────────────────────────────────────────────────" >&2
+echo "Found ${FOUND} matching market(s)." >&2
 echo "" >&2
 
 if [[ ${#ALL_TOKEN_IDS[@]} -gt 0 ]]; then
-  # Join all token IDs (each entry is already comma-separated within a market)
   JOINED=$(IFS=,; echo "${ALL_TOKEN_IDS[*]}")
   echo "Paste into .env:"
   echo "  POLYMARKET_TOKEN_IDS=${JOINED}"
+  echo ""
+  echo "Or set the slug pattern directly (auto-discovery will use it):"
+  echo "  POLYMARKET_SLUG_PATTERN=${SLUG_PATTERN}"
 else
-  echo "No markets found. Try a different keyword:"
-  echo "  $0 Bitcoin"
-  echo "  $0 \"15 min\""
-  echo "  $0 crypto"
+  echo "No markets found. Inspect available slugs first:"
+  echo "  curl -s '${BASE}/markets?active=true&closed=false&enableOrderBook=true&limit=20' | jq '.[].slug'"
+  echo ""
+  echo "Then refine your pattern:"
+  echo "  $0 'btc.*15'"
+  echo "  $0 'bitcoin.*minute'"
 fi

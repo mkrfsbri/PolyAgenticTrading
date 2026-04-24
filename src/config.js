@@ -39,14 +39,12 @@ export const config = Object.freeze({
   },
 
   discovery: {
-    // Set POLYMARKET_AUTO_DISCOVER=false to use only static POLYMARKET_TOKEN_IDS.
+    // Set POLYMARKET_AUTO_DISCOVER=false to rely solely on POLYMARKET_TOKEN_IDS.
     enabled: process.env.POLYMARKET_AUTO_DISCOVER !== 'false',
-    // AND-joined keywords — every keyword must appear in the market question.
-    // Default targets BTC 15-minute markets; adjust via POLYMARKET_KEYWORDS.
-    keywords: (process.env.POLYMARKET_KEYWORDS ?? 'BTC,15')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
+    // Regex matched against each market's `slug` field (case-insensitive, no flags needed).
+    // Slugs are kebab-case: e.g. "btc-up-or-down-in-15-minutes-jan-15-12-00".
+    // Default targets BTC 15-minute markets; refine via POLYMARKET_SLUG_PATTERN.
+    slugPattern: process.env.POLYMARKET_SLUG_PATTERN ?? 'btc.*15',
     // How often to poll the Gamma API for new / expired markets (ms).
     intervalMs: Number(process.env.POLYMARKET_DISCOVER_INTERVAL_MS ?? 60_000),
   },
