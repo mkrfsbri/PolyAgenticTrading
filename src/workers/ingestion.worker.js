@@ -3,11 +3,13 @@
  *
  * Maintains two persistent WebSocket connections:
  *   1. Binance — `btcusdt@depth10@100ms` partial book depth stream.
- *   2. Polymarket CLOB — L2 order book for configured outcome token IDs.
+ *   2. Polymarket CLOB — L2 order book for auto-discovered outcome token IDs.
  *
- * Every incoming market event is normalized into a uniform record and sent
- * to the database worker via the shared MessageChannel port (no main-thread
- * roundtrip, zero serialization overhead beyond structured clone).
+ * Token IDs are managed dynamically by MarketDiscovery (src/discovery.js):
+ *   - On startup: seeds from POLYMARKET_TOKEN_IDS env var (optional).
+ *   - Every 60 s: polls the Gamma API, detects new / expired markets.
+ *   - New markets are hot-subscribed on the live WebSocket without reconnecting.
+ *   - Expired market order books are evicted from memory immediately.
  *
  * Reconnection uses exponential backoff (1 s → 32 s) per source.
  * A periodic ping/pong cycle detects silent-but-open ("ghost") connections.
@@ -17,6 +19,7 @@ import { workerData, parentPort } from 'worker_threads';
 import WebSocket                   from 'ws';
 import pino                        from 'pino';
 import { config }                  from '../config.js';
+import { MarketDiscovery }         from '../discovery.js';
 
 const log = pino({ name: 'ingestion', level: process.env.LOG_LEVEL ?? 'info' });
 
@@ -181,6 +184,35 @@ function normalizeBinance(msg, arrivalTs) {
 // POLYMARKET CLOB
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ─── Live token ID registry ────────────────────────────────────────────────
+//
+// Seeded from the static env var; MarketDiscovery updates it on every poll.
+// connectPolymarket() always reads THIS set when subscribing, so reconnects
+// automatically pick up the latest market set without extra logic.
+let activeTokenIds = new Set(config.polymarket.tokenIds);
+
+function onMarketsUpdated(added, removed, all) {
+  // Evict order book state for expired markets to free memory immediately.
+  for (const id of removed) {
+    orderBooks.delete(id);
+    log.info({ tokenId: id }, 'Market expired — order book evicted');
+  }
+
+  // Atomically update the registry BEFORE sending subscribe, so any concurrent
+  // reconnect that fires between the two lines sees the complete new set.
+  activeTokenIds = all;
+
+  // Hot-subscribe to new markets on the open WebSocket — no reconnect needed.
+  if (added.size > 0 && polyWs?.readyState === WebSocket.OPEN) {
+    polyWs.send(JSON.stringify({ type: 'subscribe', assets_ids: [...added] }));
+    log.info({ count: added.size, ids: [...added] }, 'Hot-subscribed to new markets');
+  }
+  // If the WebSocket is not open, the pending reconnect will subscribe to
+  // the full activeTokenIds set when it calls connectPolymarket().
+}
+
+// ─── Order book state ──────────────────────────────────────────────────────
+
 // Local order book state, keyed by asset (outcome token) ID.
 // Maintained as a mutable Map so incremental price_change events can be
 // applied without a full snapshot on every tick.
@@ -212,15 +244,7 @@ let polyWs = null;
 let polyPP = null;
 
 function connectPolymarket() {
-  if (config.polymarket.tokenIds.length === 0) {
-    log.warn('POLYMARKET_TOKEN_IDS not set — Polymarket feed disabled');
-    return;
-  }
-
-  log.info(
-    { url: config.polymarket.wsUrl, tokens: config.polymarket.tokenIds },
-    'Connecting to Polymarket CLOB WebSocket'
-  );
+  log.info({ url: config.polymarket.wsUrl }, 'Connecting to Polymarket CLOB WebSocket');
 
   polyWs = new WebSocket(config.polymarket.wsUrl, {
     perMessageDeflate: false,
@@ -231,11 +255,16 @@ function connectPolymarket() {
     log.info('Polymarket CLOB WebSocket open');
     resetReconnectDelay('polymarket');
 
-    // Subscribe to the order book channel for all configured token IDs.
-    polyWs.send(JSON.stringify({
-      type:      'subscribe',
-      assets_ids: config.polymarket.tokenIds,
-    }));
+    if (activeTokenIds.size > 0) {
+      // Subscribe to all currently known token IDs. This covers both the
+      // initial static list and any IDs discovered before this connect fired.
+      polyWs.send(JSON.stringify({ type: 'subscribe', assets_ids: [...activeTokenIds] }));
+      log.info({ count: activeTokenIds.size }, 'Subscribed to active markets');
+    } else {
+      // No IDs yet — discovery will hot-subscribe via onMarketsUpdated once
+      // the first Gamma API poll completes.
+      log.info('No token IDs yet — awaiting first discovery poll');
+    }
 
     polyPP = createPingPong(polyWs, 'polymarket');
     polyPP.start();
@@ -372,5 +401,26 @@ setInterval(() => {
 // ─── Boot ──────────────────────────────────────────────────────────────────
 
 connectBinance();
-connectPolymarket();
+
+if (config.discovery.enabled) {
+  // Connect the WebSocket first so it's ready to receive subscribe messages the
+  // moment the first discovery poll returns (typically within a few seconds).
+  connectPolymarket();
+
+  const discovery = new MarketDiscovery({
+    slugPattern: config.discovery.slugPattern,
+    intervalMs:  config.discovery.intervalMs,
+    onUpdate:    onMarketsUpdated,
+  });
+
+  // Await the first poll inline — if it succeeds we subscribe immediately on the
+  // open WebSocket; if it fails we log the error and fall back to the static IDs.
+  discovery.start().catch((err) => log.error({ err }, 'Initial market discovery failed'));
+} else if (activeTokenIds.size > 0) {
+  // Static mode: IDs come entirely from POLYMARKET_TOKEN_IDS in .env.
+  connectPolymarket();
+} else {
+  log.warn('Auto-discovery disabled and POLYMARKET_TOKEN_IDS not set — Polymarket feed disabled');
+}
+
 parentPort.postMessage({ type: 'ready' });
